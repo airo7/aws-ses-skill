@@ -73,13 +73,7 @@ All scripts:
 
 ## Installation (Hermes Agent)
 
-**From the skills hub:**
-
-```bash
-hermes skills install airo7/aws-ses-skill
-```
-
-**From a URL (this repo's raw SKILL.md):**
+**From this repo's raw SKILL.md (verified working):**
 
 ```bash
 hermes skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/main/SKILL.md
@@ -97,7 +91,7 @@ immediately (skills are discovered on session start). To use it in another
 profile, install there too:
 
 ```bash
-hermes --profile <name> skills install airo7/aws-ses-skill
+hermes --profile <name> skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/main/SKILL.md
 ```
 
 Verify it's installed:
