@@ -79,6 +79,14 @@ All scripts:
 hermes skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/main/SKILL.md
 ```
 
+**From ClawHub (community hub):**
+
+```bash
+hermes skills install airo7/aws-ses-skill
+# or discover it first:
+hermes skills search aws-ses --source clawhub
+```
+
 **Manually (local copy):**
 
 ```bash
