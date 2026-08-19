@@ -1,12 +1,16 @@
 # aws-ses-skill
 
-**Amazon SES skill for Hermes Agent: sandbox → production access, domain/DKIM/SPF setup, SMTP credentials, and newsletter (Sendy) integration.**
+**Amazon SES skill for any agent / harness: sandbox → production access, domain/DKIM/SPF setup, SMTP credentials, and newsletter (Sendy) integration.**
 
 > **Author:** abebe — [@airo77](https://x.com/airo77)
 
 A battle-tested playbook that takes a fresh AWS account to a working,
 production-capable email setup — including the exact support-case strategy
 that gets **production access GRANTED** (the step most guides gloss over).
+
+Works with Hermes Agent, Claude Code, Codex, Cursor, OpenCode, OpenClaw, and
+any other tool that loads a `SKILL.md`. The scripts are plain `python3` +
+`boto3` — no Hermes runtime required.
 
 ---
 
@@ -71,42 +75,67 @@ All scripts:
 
 ---
 
-## Installation (Hermes Agent)
+## Installation
 
-**From this repo's raw SKILL.md (verified working):**
+Clone once, then drop the folder where your agent looks for skills. The
+playbook lives in `SKILL.md`; scripts stay next to it.
+
+```bash
+git clone https://github.com/airo7/aws-ses-skill.git
+```
+
+### Hermes Agent
 
 ```bash
 hermes skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/main/SKILL.md
-```
-
-**From ClawHub (community hub):**
-
-```bash
+# or from ClawHub:
 hermes skills install airo7/aws-ses-skill
-# or discover it first:
-hermes skills search aws-ses --source clawhub
 ```
 
-**Manually (local copy):**
+### Claude Code
 
 ```bash
-mkdir -p ~/.hermes/skills/devops/
-cp -r aws-ses-skill ~/.hermes/skills/devops/aws-ses/
+mkdir -p ~/.claude/skills
+cp -r aws-ses-skill ~/.claude/skills/aws-ses
+# or project-local:
+mkdir -p .claude/skills
+cp -r aws-ses-skill .claude/skills/aws-ses
 ```
 
-The skill becomes available to the agent in the current profile
-immediately (skills are discovered on session start). To use it in another
-profile, install there too:
+### OpenAI Codex CLI
 
 ```bash
-hermes --profile <name> skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/main/SKILL.md
+mkdir -p ~/.codex/skills
+cp -r aws-ses-skill ~/.codex/skills/aws-ses
 ```
 
-Verify it's installed:
+### Cursor
 
 ```bash
-hermes skills list | grep aws-ses
+mkdir -p .cursor/skills
+cp -r aws-ses-skill .cursor/skills/aws-ses
 ```
+
+### OpenCode / OpenClaw / any SKILL.md agent
+
+```bash
+# OpenCode
+mkdir -p .opencode/skills
+cp -r aws-ses-skill .opencode/skills/aws-ses
+
+# OpenClaw / ClawHub
+# listing: https://clawhub.ai/airo7/skills/aws-ses-skill
+```
+
+### No agent — just the scripts
+
+```bash
+cd aws-ses-skill
+python3 -m pip install boto3
+python3 scripts/check_ses_status.py yourdomain.com
+```
+
+Restart the agent (or start a new session) so it re-scans skills.
 
 ---
 

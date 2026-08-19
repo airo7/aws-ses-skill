@@ -1,16 +1,23 @@
 ---
 name: aws-ses
 description: "Amazon SES: sandbox -> production, domain/DKIM/SPF, SMTP creds, Sendy."
-version: 1.0.0
+version: 0.0.2
 author: abebe
 author_x: https://x.com/airo77
 license: MIT
 dependencies: [boto3]
 platforms: [linux, macos]
+compatibility: "Any agent that loads SKILL.md (Hermes, Claude Code, Codex, Cursor, OpenCode, OpenClaw). Scripts are plain python3 + boto3."
 metadata:
   hermes:
     tags: [AWS, SES, Email, SMTP, DKIM, SPF, Sendy, Newsletter, Marketing]
     related_skills: []
+  openclaw:
+    requires:
+      bins: [python3]
+      anyBins: [dig]
+      env: [AWS_DEFAULT_REGION]
+      optionalEnv: [SES_DOMAIN]
 ---
 
 # AWS SES — Sandbox to Production Playbook
