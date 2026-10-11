@@ -9,7 +9,9 @@ aws-documented example key with independently-measured output.
 import io
 import json
 import os
+import stat
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
@@ -142,12 +144,57 @@ class TestGenSmtpPassword(unittest.TestCase):
 
     def test_cli_missing_region_exits_1(self):
         with mock.patch.dict(os.environ, {}, clear=True), \
-                mock.patch("sys.argv", ["gen_smtp_password.py", "--secret", "x"]), \
+                mock.patch("sys.argv", ["gen_smtp_password.py"]), \
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err:
             with self.assertRaises(SystemExit) as ctx:
                 gen_smtp_password.main()
             self.assertEqual(ctx.exception.code, 1)
             self.assertIn("region", err.getvalue().lower())
+
+    def test_cli_has_no_secret_argv_flag(self):
+        with mock.patch("sys.argv", ["gen_smtp_password.py", "--secret", "x"]), \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as ctx:
+                gen_smtp_password.main()
+            self.assertEqual(ctx.exception.code, 2)
+
+    def _run_cli(self, argv, stdin=""):
+        with mock.patch.dict(os.environ, {"AWS_DEFAULT_REGION": "eu-north-1"}, clear=True), \
+                mock.patch("sys.argv", ["gen_smtp_password.py", *argv]), \
+                mock.patch("sys.stdin", io.StringIO(stdin)), \
+                mock.patch.object(gen_smtp_password.boto3, "Session") as session, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO):
+            session.return_value.get_credentials.return_value = mock.Mock(
+                access_key="AKIAEXAMPLE", secret_key=EXAMPLE_SECRET,
+            )
+            gen_smtp_password.main()
+            return out.getvalue()
+
+    def test_cli_hides_password_by_default(self):
+        out = self._run_cli([])
+        self.assertIn("SMTP_USERNAME: AKIAEXAMPLE", out)
+        self.assertNotIn(SMTP_VECTOR_EU_NORTH_1, out)
+
+    def test_cli_show_password_prints_it(self):
+        out = self._run_cli(["--show-password"])
+        self.assertIn(SMTP_VECTOR_EU_NORTH_1, out)
+
+    def test_cli_secret_stdin(self):
+        out = self._run_cli(["--secret-stdin", "--show-password"], stdin=EXAMPLE_SECRET + "\n")
+        self.assertIn(SMTP_VECTOR_EU_NORTH_1, out)
+
+    def test_cli_output_file_is_0600_and_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "smtp.env")
+            out = self._run_cli(["--output", path])
+            self.assertNotIn(SMTP_VECTOR_EU_NORTH_1, out)
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            with open(path) as fh:
+                self.assertIn(f"SMTP_PASSWORD={SMTP_VECTOR_EU_NORTH_1}", fh.read())
+            with self.assertRaises(SystemExit) as ctx:
+                self._run_cli(["--output", path])
+            self.assertEqual(ctx.exception.code, 1)
 
 
 # ─ check_ses_status ───────────────────────────────────────────────
@@ -271,6 +318,26 @@ class TestVerifyDns(unittest.TestCase):
             answers = verify_dns.dig_short("sel1._domainkey.example.com")
             self.assertEqual(answers, ["abc.dkim.amazonses.com"])
 
+    def test_dig_short_pins_name_and_type(self):
+        with mock.patch(
+            "subprocess.run",
+            return_value=mock.Mock(stdout="", returncode=0),
+        ) as run:
+            verify_dns.dig_short("example.com", "TXT")
+            self.assertEqual(run.call_args.args[0],
+                             ["dig", "+short", "-q", "example.com", "-t", "TXT"])
+
+    def test_dig_short_rejects_invalid_names(self):
+        with mock.patch("subprocess.run") as run:
+            for bad in ["-f/etc/passwd", "a b.com", "x.com;rm", "@8.8.8.8", ""]:
+                with self.assertRaises(ValueError):
+                    verify_dns.dig_short(bad)
+            run.assert_not_called()
+
+    def test_valid_dns_names(self):
+        for good in ["example.com", "abc123._domainkey.example.com", "mail.example.co.uk."]:
+            self.assertTrue(verify_dns.is_valid_dns_name(good), good)
+
 
 # ─ send_test_email ────────────────────────────────────────────────
 
@@ -369,6 +436,23 @@ class TestBounceStats(unittest.TestCase):
         stats = bounce_stats.collect_stats(client)
         self.assertEqual(stats["suppression"]["bounces"], 1)
         self.assertEqual(stats["suppression"]["complaints"], 1)
+        emails = {s["email"] for s in stats["suppression"]["samples"]}
+        self.assertEqual(emails, {"b***@x.com", "c***@x.com"})
+
+    def test_collect_stats_reveal_addresses(self):
+        client, stub = sesv2_stub()
+        stub.add_response("get_account", sample_account(), {})
+        stub.add_response(
+            "list_suppressed_destinations",
+            {"SuppressedDestinationSummaries": [self._entry("b1@x.com", "BOUNCE")]},
+        )
+        stub.activate()
+        stats = bounce_stats.collect_stats(client, reveal_addresses=True)
+        self.assertEqual(stats["suppression"]["samples"][0]["email"], "b1@x.com")
+
+    def test_mask_email(self):
+        self.assertEqual(bounce_stats.mask_email("alice@example.com"), "a***@example.com")
+        self.assertEqual(bounce_stats.mask_email("not-an-address"), "***")
 
     def test_complaint_rate_is_ratio(self):
         # Reputation.ComplaintRate is a ratio: 0.2 == 20%, not 0.2%.

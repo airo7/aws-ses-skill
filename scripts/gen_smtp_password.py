@@ -40,14 +40,12 @@ def derive_smtp_password(iam_secret: str, region: str) -> str:
     return base64.b64encode(bytes([0x04]) + signature).decode("ascii")
 
 
-def _resolve_credentials(secret: str | None) -> tuple[str, str]:
-    """resolve (iam_secret, iam_key_id) from --secret or the boto3 chain.
-
-    prefers the explicit --secret flag; otherwise falls back to the standard
-    boto3 credential chain. never prints or sends the secret anywhere.
-    """
-    if secret:
-        # key id only available from the chain; may be None if only --secret given.
+def _resolve_credentials(secret_from_stdin: bool) -> tuple[str, str | None]:
+    """resolve (iam_secret, iam_key_id) from stdin or the boto3 chain."""
+    if secret_from_stdin:
+        secret = sys.stdin.readline().strip()
+        if not secret:
+            raise ValueError("--secret-stdin given but nothing was read from stdin.")
         try:
             creds = boto3.Session().get_credentials()
             key_id = creds.access_key if creds else None
@@ -58,25 +56,52 @@ def _resolve_credentials(secret: str | None) -> tuple[str, str]:
     creds = boto3.Session().get_credentials()
     if not creds or not creds.secret_key:
         raise ValueError(
-            "No IAM secret available. Pass --secret or configure the "
-            "standard AWS credential chain (environment variables, "
-            "shared credentials file, or an IAM role)."
+            "No IAM secret available. Configure the standard AWS credential "
+            "chain (AWS_PROFILE, shared credentials file, SSO, or an IAM role) "
+            "or pipe the secret in with --secret-stdin."
         )
     return creds.secret_key, creds.access_key
 
 
+def write_credentials_file(path: str, username: str, password: str, region: str) -> None:
+    """write smtp credentials to a new file readable only by the owner."""
+    # O_EXCL: never clobber or follow a pre-existing file/symlink.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(f"SMTP_USERNAME={username}\n")
+        fh.write(f"SMTP_PASSWORD={password}\n")
+        fh.write(f"SMTP_SERVER=email-smtp.{region}.amazonaws.com\n")
+        fh.write("SMTP_PORT=587\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Derive an SES SMTP password from an IAM secret key."
-    )
-    parser.add_argument(
-        "--secret",
-        help="IAM Secret Access Key (falls back to the boto3 credential chain)",
+        description=(
+            "Derive an SES SMTP password from an IAM secret key. The secret is "
+            "read from the boto3 credential chain (or stdin), never from argv."
+        ),
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--region",
         default=None,
         help="AWS region for the SMTP endpoint (required; also read from AWS_DEFAULT_REGION)",
+    )
+    parser.add_argument(
+        "--secret-stdin",
+        action="store_true",
+        help="Read the IAM secret from stdin instead of the boto3 credential chain.",
+    )
+    out = parser.add_mutually_exclusive_group()
+    out.add_argument(
+        "--output",
+        metavar="PATH",
+        help="Write credentials to a NEW file with 0600 permissions (refuses to overwrite).",
+    )
+    out.add_argument(
+        "--show-password",
+        action="store_true",
+        help="Print the SMTP password to stdout. Avoid in logged or shared sessions.",
     )
     args = parser.parse_args()
 
@@ -86,17 +111,31 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        iam_secret, iam_key_id = _resolve_credentials(args.secret)
+        iam_secret, iam_key_id = _resolve_credentials(args.secret_stdin)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
     smtp_password = derive_smtp_password(iam_secret, region)
+    username = iam_key_id or "<not resolved>"
 
-    print(f"SMTP_USERNAME: {iam_key_id or '<not resolved>'}")
-    print(f"SMTP_PASSWORD: {smtp_password}")
+    if args.output:
+        try:
+            write_credentials_file(args.output, username, smtp_password, region)
+        except FileExistsError:
+            print(f"ERROR: {args.output} already exists; refusing to overwrite.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Wrote SMTP credentials to {args.output} (mode 0600).")
+        return
+
+    print(f"SMTP_USERNAME: {username}")
+    if args.show_password:
+        print("WARNING: printing a live SMTP password.", file=sys.stderr)
+        print(f"SMTP_PASSWORD: {smtp_password}")
+    else:
+        print("SMTP_PASSWORD: <hidden — rerun with --output PATH or --show-password>")
     print(f"SMTP_SERVER:   email-smtp.{region}.amazonaws.com")
-    print(f"SMTP_PORT:     587")
+    print("SMTP_PORT:     587")
 
 
 if __name__ == "__main__":

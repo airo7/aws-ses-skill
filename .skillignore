@@ -3,3 +3,12 @@
 tests/
 __pycache__/
 *.pyc
+
+# Credentials — never commit or package
+.env
+.env.*
+*.env
+.aws/
+credentials
+*.pem
+*.key

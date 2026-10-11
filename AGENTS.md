@@ -13,8 +13,17 @@ and templates. It is not Hermes-only.
 
 ## Hard rules
 
-- Never echo, log, or paste IAM secrets or derived SMTP passwords.
-- Prefer the boto3 default credential chain over putting secrets on the CLI.
+- Never echo, log, or paste IAM secrets or derived SMTP passwords. Use
+  `gen_smtp_password.py --output PATH`; do not use `--show-password` in a
+  logged or shared session.
+- Credentials come from the boto3 chain (`AWS_PROFILE`, SSO, IAM role). There is
+  no `--secret` flag; never put secrets in argv.
+- `bounce_stats.py` masks recipient addresses. Only pass `--show-addresses` if
+  the user asks, and do not paste the result into chat or logs.
+- Ask before anything that sends mail, mutates AWS resources, or calls a
+  third-party URL (Sendy, `curl` examples in `SKILL.md`).
+- Do not read other skills' directories or create cron jobs, startup hooks, or
+  state files.
 - Preview mutating steps with `--dry-run` (`send_test_email.py`, `setup_domain.py`).
 - Tests must stay mocked (`python3 -m unittest tests.test_aws_ses -v`). Do not
   hit a live AWS account unless the user explicitly asks.
@@ -27,8 +36,9 @@ and templates. It is not Hermes-only.
 - `scripts/check_ses_status.py [domain]`
 - `scripts/setup_domain.py <domain> [--dry-run] [--mail-from bounce.domain]`
 - `scripts/verify_dns.py <domain>`
-- `scripts/gen_smtp_password.py --region <region>`
+- `scripts/gen_smtp_password.py --region <region> --output <path> [--secret-stdin]`
 - `scripts/send_test_email.py --from ... --to ... [--dry-run]`
-- `scripts/bounce_stats.py`
+- `scripts/bounce_stats.py [--json] [--show-addresses]`
 
-Requires Python 3.11+, `boto3`, and `dig` only for `verify_dns.py`.
+Requires Python 3.11+, `boto3` (pinned in `requirements.txt`), and `dig` only
+for `verify_dns.py`.

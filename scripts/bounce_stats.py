@@ -26,6 +26,14 @@ def get_cloudwatch_client(region: str | None = None):
     return boto3.client(**kwargs)
 
 
+def mask_email(address: str) -> str:
+    """redact the local part of an address: alice@x.com -> a***@x.com."""
+    local, sep, domain = address.partition("@")
+    if not sep:
+        return "***"
+    return f"{local[:1]}***@{domain}"
+
+
 def list_suppressed(
     client,
     max_items: int = 1000,
@@ -60,8 +68,16 @@ def list_suppressed(
     return items
 
 
-def collect_stats(client, max_suppressed: int = 1000) -> dict:
-    """gather suppression + account health in one dict."""
+def collect_stats(
+    client,
+    max_suppressed: int = 1000,
+    reveal_addresses: bool = False,
+) -> dict:
+    """gather suppression + account health in one dict.
+
+    sample addresses are masked unless reveal_addresses is set — they are
+    recipient PII and this output often ends up in logs or chat transcripts.
+    """
 
     result: dict = {
         "account": {},
@@ -101,7 +117,10 @@ def collect_stats(client, max_suppressed: int = 1000) -> dict:
         )
         # most recent first
         suppressed.sort(key=lambda s: s.get("updated", ""), reverse=True)
-        result["suppression"]["samples"] = suppressed[:10]
+        samples = suppressed[:10]
+        if not reveal_addresses:
+            samples = [{**s, "email": mask_email(s["email"])} for s in samples]
+        result["suppression"]["samples"] = samples
     except (BotoCoreError, ClientError) as exc:
         result["suppression_error"] = str(exc)
 
@@ -143,11 +162,18 @@ def main() -> None:
                         help="Max suppression-list entries to scan (default: 1000).")
     parser.add_argument("--region",
                         help="AWS region (default: $AWS_DEFAULT_REGION)")
+    parser.add_argument("--show-addresses", action="store_true",
+                        help="Include full recipient addresses in --json samples "
+                             "(masked by default; they are personal data).")
     args = parser.parse_args()
 
     region = args.region or os.getenv("AWS_DEFAULT_REGION")
     client = get_client(region)
-    stats = collect_stats(client, max_suppressed=args.max_suppressed)
+    stats = collect_stats(
+        client,
+        max_suppressed=args.max_suppressed,
+        reveal_addresses=args.show_addresses,
+    )
 
     if args.json:
         try:

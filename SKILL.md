@@ -1,7 +1,7 @@
 ---
 name: aws-ses
-description: "Amazon SES: sandbox -> production, domain/DKIM/SPF, SMTP creds, Sendy."
-version: 0.0.2
+description: "Amazon SES playbook. Scripts: check account/sandbox status, create a domain identity and print DKIM/SPF records, verify DNS, derive an SMTP password locally, send a test email, report bounce/complaint stats. Production-access requests and Sendy setup are written guidance only — no script automates them."
+version: 0.1.2
 author: abebe
 author_x: https://x.com/airo77
 license: MIT
@@ -17,7 +17,7 @@ metadata:
       bins: [python3]
       anyBins: [dig]
       env: [AWS_DEFAULT_REGION]
-      optionalEnv: [SES_DOMAIN]
+      optionalEnv: [AWS_PROFILE, SES_DOMAIN]
 ---
 
 # AWS SES — Sandbox to Production Playbook
@@ -25,6 +25,34 @@ metadata:
 Everything you need to go from a fresh AWS account to a working, production-capable
 email-sending setup through Amazon SES, including Sendy newsletter integration as a
 worked example.
+
+---
+
+## Scope & Permissions
+
+What the bundled scripts actually do, and nothing else:
+
+| Script | AWS calls | Other access | Mutates? |
+|---|---|---|---|
+| `check_ses_status.py` | `GetAccount`, `GetEmailIdentity` | — | No |
+| `bounce_stats.py` | `GetAccount`, `ListSuppressedDestinations`, CloudWatch `GetMetricStatistics` | — | No |
+| `verify_dns.py` | `GetEmailIdentity` | runs `dig` (validated names only) | No |
+| `setup_domain.py` | `CreateEmailIdentity`, `GetEmailIdentity`, `PutEmailIdentityMailFromAttributes` | — | Yes (`--dry-run` available) |
+| `send_test_email.py` | `GetAccount`, `SendEmail` | — | Yes — sends mail (`--dry-run` available) |
+| `gen_smtp_password.py` | none (local HMAC) | reads the boto3 credential chain or stdin | Only writes a file if `--output` is given |
+
+Everything else in this document — production-access cases, SNS/configuration
+sets, Sendy, `aws` CLI, `curl`, `openssl` snippets — is **reference material
+for the user to run themselves**. Agents must:
+
+- ask before running any command that sends email, creates/changes AWS
+  resources, or calls a third-party URL (e.g. a Sendy instance);
+- never print, log, or paste IAM secrets, SMTP passwords, or API keys;
+- not read other skills' directories, install cron jobs or startup hooks, or
+  write state outside the user-specified paths.
+
+Network: AWS SES v2 and CloudWatch endpoints in the configured region, plus
+DNS lookups via `dig`. No other hosts.
 
 ---
 
@@ -46,53 +74,98 @@ Trigger this skill when the user wants to:
 
 ### AWS account readiness
 
-You need an AWS account with billing enabled and a **programmatic IAM user** (or role)
-that has these permissions at minimum:
+You need an AWS account with billing enabled and a **programmatic IAM user** (or role).
+Grant only what the current task needs. IAM uses the `ses:` prefix for both the
+v1 and v2 SES APIs (there is no `sesv2:` prefix). Replace `<region>`, `<acct>`
+and `mydomain.com`.
+
+**Read-only diagnostics** (`check_ses_status.py`, `bounce_stats.py`, `verify_dns.py`):
 
 ```json
 {
     "Version": "2012-10-17",
     "Statement": [
         {
+            "Sid": "SesReadAccount",
             "Effect": "Allow",
             "Action": [
-                "ses:SendEmail",
-                "ses:SendRawEmail",
                 "ses:GetAccount",
-                "ses:GetSendQuota",
-                "ses:GetSendStatistics",
-                "ses:GetIdentityVerificationAttributes",
-                "ses:GetIdentityDkimAttributes",
-                "ses:GetIdentityMailFromDomainAttributes",
-                "ses:VerifyDomainIdentity",
-                "ses:VerifyEmailIdentity",
-                "sesv2:GetAccount",
-                "sesv2:GetEmailIdentity",
-                "sesv2:CreateEmailIdentity",
-                "sesv2:SendEmail",
-                "sesv2:ListSuppressedDestinations",
-                "sesv2:PutEmailIdentityMailFromAttributes",
+                "ses:ListSuppressedDestinations",
                 "cloudwatch:GetMetricStatistics"
             ],
             "Resource": "*"
+        },
+        {
+            "Sid": "SesReadIdentity",
+            "Effect": "Allow",
+            "Action": "ses:GetEmailIdentity",
+            "Resource": "arn:aws:ses:<region>:<acct>:identity/mydomain.com"
         }
     ]
 }
 ```
 
-### Environment variables
+**Domain setup** (`setup_domain.py`) — add only while configuring the domain, then remove:
 
-Set these (e.g. in a `.env` file that you `source` before running scripts):
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "SesDomainSetup",
+            "Effect": "Allow",
+            "Action": [
+                "ses:CreateEmailIdentity",
+                "ses:GetEmailIdentity",
+                "ses:PutEmailIdentityMailFromAttributes"
+            ],
+            "Resource": "arn:aws:ses:<region>:<acct>:identity/mydomain.com"
+        }
+    ]
+}
+```
+
+**Sending** (`send_test_email.py`, SMTP users) — locked to one identity and one
+From domain:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "SesSendFromMyDomain",
+            "Effect": "Allow",
+            "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+            "Resource": "arn:aws:ses:<region>:<acct>:identity/mydomain.com",
+            "Condition": {
+                "StringLike": {"ses:FromAddress": "*@mydomain.com"}
+            }
+        }
+    ]
+}
+```
+
+If you send with a configuration set, also allow its ARN
+(`arn:aws:ses:<region>:<acct>:configuration-set/<name>`) on the sending
+statement. Use a **separate** IAM user for SMTP credentials (Sendy, your app)
+with only the sending policy — its secret becomes the SMTP password.
+
+### Credentials
+
+Use the standard AWS credential chain — never put keys in shell commands, in
+this skill's folder, or in a repository:
 
 ```bash
-export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_SECRET_ACCESS_KEY=...
+aws configure --profile ses        # or: aws configure sso --profile ses
+export AWS_PROFILE=ses
 export AWS_DEFAULT_REGION=eu-north-1   # or nearest SES region
 ```
 
-**Never echo or hardcode keys.** The scripts in this skill read from the environment
-via boto3's default credential chain. Prefer a `.env` file that you `source .env`
-before running commands.
+On EC2/ECS/Lambda, attach an IAM role instead and set only the region.
+
+If you must use a `.env` file, keep it **outside** any git repo and outside the
+installed skill directory, and `chmod 600` it. This repo's `.gitignore` and
+`.skillignore` exclude `.env*`, `*.pem` and `credentials` files as a backstop.
 
 ### Region choice
 
@@ -338,20 +411,27 @@ Once your case status changes to GRANTED and `ProductionAccessEnabled` is `true`
 ## 6. Step 5 — Generate SMTP Credentials
 
 SES SMTP credentials are **not** your IAM secret key. They are derived from it
-via a keyed HMAC-SHA256 with `"SendRawEmail"` as the key material.
+locally with a SigV4-style HMAC-SHA256 chain (see below). Nothing is sent to AWS.
 
 ### Run the derivation script
 
 ```bash
-python3 scripts/gen_smtp_password.py
+# Recommended: write to a new 0600 file outside any repo, then load it into your app's secret store.
+python3 scripts/gen_smtp_password.py --region eu-north-1 --output ~/ses-smtp.env
 ```
 
-This reads `AWS_SECRET_ACCESS_KEY` and `AWS_DEFAULT_REGION` from the environment
-and outputs:
+The secret comes from the boto3 credential chain (`AWS_PROFILE`, shared
+credentials file, SSO, or an instance role). There is **no** `--secret` flag —
+command-line arguments are visible in `ps` and shell history. To derive for a
+different key, pipe it in: `python3 scripts/gen_smtp_password.py --region eu-north-1 --secret-stdin --output ~/ses-smtp.env < keyfile`.
+
+Without `--output`, the script prints only the non-secret fields and hides the
+password. `--show-password` prints it to stdout — avoid it in agent sessions,
+CI logs, or screen shares.
 
 ```
 SMTP_USERNAME: AKIA...
-SMTP_PASSWORD: BLBM...  (derived from IAM secret via SigV4 chain — NOT the raw secret)
+SMTP_PASSWORD: <hidden — rerun with --output PATH or --show-password>
 SMTP_SERVER:   email-smtp.eu-north-1.amazonaws.com
 SMTP_PORT:     587
 ```
@@ -477,11 +557,21 @@ request will be denied.
 
 Sendy exposes a simple HTTP API for managing campaigns and subscribers.
 
+> **For the user to run, not the agent.** These calls go to *your own* Sendy
+> server and can email real subscribers. An agent must not run them without
+> explicit confirmation of the URL, the list, and whether to send. Keep the API
+> key in an environment variable — never inline it.
+
+```bash
+export SENDY_URL=https://sendy.yourdomain.com
+read -rs SENDY_API_KEY && export SENDY_API_KEY   # prompt, not shell history
+```
+
 #### Create a campaign (draft or send immediately):
 
 ```bash
-curl -X POST https://sendy.yourdomain.com/api/campaigns/create.php \
-  -d "api_key=YOUR_SENDY_API_KEY" \
+curl -X POST "$SENDY_URL/api/campaigns/create.php" \
+  --data-urlencode "api_key=$SENDY_API_KEY" \
   -d "brand_id=1" \
   -d "list_ids=1,2" \
   -d "title=Weekly Digest" \
@@ -491,14 +581,14 @@ curl -X POST https://sendy.yourdomain.com/api/campaigns/create.php \
   -d "reply_to=hello@mydomain.com" \
   -d "plain_text=Fallback plain text version" \
   -d "html_text=<h1>Hello!</h1><p>This is the newsletter.</p>" \
-  -d "send_campaign=1"            # 0 = draft, 1 = send immediately
+  -d "send_campaign=0"            # 0 = draft (review in Sendy first), 1 = send immediately
 ```
 
 #### Subscribe an email address:
 
 ```bash
-curl -X POST https://sendy.yourdomain.com/subscribe \
-  -d "api_key=YOUR_SENDY_API_KEY" \
+curl -X POST "$SENDY_URL/subscribe" \
+  --data-urlencode "api_key=$SENDY_API_KEY" \
   -d "list=LIST_ID" \
   -d "email=subscriber@example.com" \
   -d "name=John Doe" \
@@ -951,8 +1041,8 @@ equivalent on a managed platform.
 
 7. **Never echo keys in shell commands.**
    `AWS_SECRET_ACCESS_KEY` and derived SMTP passwords should never appear in
-   shell history or log output. Use `.env` files and source them; let scripts
-   read from the environment.
+   shell history or log output. Use an `AWS_PROFILE` or IAM role; write SMTP
+   credentials with `gen_smtp_password.py --output` rather than printing them.
 
 ---
 
@@ -1003,8 +1093,8 @@ python3 scripts/check_ses_status.py mydomain.com
 # 2. Verify DNS records
 python3 scripts/verify_dns.py mydomain.com
 
-# 3. Generate SMTP credentials
-python3 scripts/gen_smtp_password.py
+# 3. Generate SMTP credentials (written to a new 0600 file, not printed)
+python3 scripts/gen_smtp_password.py --region eu-north-1 --output ~/ses-smtp.env
 
 # 4. Set up a domain identity + print DNS records
 python3 scripts/setup_domain.py mydomain.com --dry-run   # preview first
@@ -1018,7 +1108,7 @@ python3 scripts/send_test_email.py \
     --from hello@mydomain.com --to me@example.com \
     --subject "Test" --body "Hello from SES"
 
-# 6. Monitor bounce & complaint health
+# 6. Monitor bounce & complaint health (sample addresses masked unless --show-addresses)
 python3 scripts/bounce_stats.py
 ```
 

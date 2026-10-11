@@ -7,11 +7,23 @@ the api and checks specific tokens manually.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+
+
+_LABEL = re.compile(r"^(?!-)[A-Za-z0-9_-]{1,63}(?<!-)$")
+_RECORD_TYPES = {"CNAME", "TXT"}
+
+
+def is_valid_dns_name(name: str) -> bool:
+    """true for a plain dns name (letters, digits, '-', '_'; no leading '-')."""
+    if not name or len(name) > 253:
+        return False
+    return all(_LABEL.match(label) for label in name.rstrip(".").split("."))
 
 
 def get_client(region: str | None = None):
@@ -29,10 +41,15 @@ def get_dkim_tokens(client, domain: str) -> list[str]:
 
 
 def dig_short(name: str, record_type: str = "CNAME") -> list[str]:
-    """run `dig +short <name> <type>` and return non-empty result lines."""
+    """run `dig +short -q <name> -t <type>` and return non-empty result lines."""
+    if not is_valid_dns_name(name):
+        raise ValueError(f"refusing to query invalid DNS name: {name!r}")
+    if record_type not in _RECORD_TYPES:
+        raise ValueError(f"unsupported record type: {record_type!r}")
     try:
+        # -q/-t pin each value to its role so a name can never be read as a dig option.
         proc = subprocess.run(
-            ["dig", "+short", name, record_type],
+            ["dig", "+short", "-q", name, "-t", record_type],
             capture_output=True,
             text=True,
             timeout=10,
@@ -95,6 +112,10 @@ def main() -> None:
     domain: str = args.domain
     region: str = args.region or os.getenv("AWS_DEFAULT_REGION")
 
+    if not is_valid_dns_name(domain):
+        print(f"ERROR: invalid domain name: {domain!r}", file=sys.stderr)
+        sys.exit(1)
+
     if args.selectors:
         selectors = args.selectors
     else:
@@ -111,6 +132,11 @@ def main() -> None:
 
     if not selectors:
         print("ERROR: no DKIM tokens found for this domain.", file=sys.stderr)
+        sys.exit(1)
+
+    bad = [s for s in selectors if not _LABEL.match(s)]
+    if bad:
+        print(f"ERROR: invalid DKIM selector(s): {', '.join(map(repr, bad))}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Checking DNS for: {domain}\n")

@@ -77,65 +77,50 @@ All scripts:
 
 ## Installation
 
-Clone once, then drop the folder where your agent looks for skills. The
-playbook lives in `SKILL.md`; scripts stay next to it.
+Install from a **tagged release**, not `main`, so the code you reviewed is the
+code you run. Replace `v0.1.2` with the release you want.
 
 ```bash
-git clone https://github.com/airo7/aws-ses-skill.git
+git clone --branch v0.1.2 --depth 1 https://github.com/airo7/aws-ses-skill.git
+python3 -m pip install -r aws-ses-skill/requirements.txt   # pinned boto3
 ```
 
-### Hermes Agent
+Then copy the folder into the skills directory your agent documents — the
+skill only needs to live there; it never reads or writes other skills.
+
+| Agent | Skills directory |
+|---|---|
+| Claude Code | `.claude/skills/aws-ses` (project) or `~/.claude/skills/aws-ses` |
+| OpenAI Codex CLI | `~/.codex/skills/aws-ses` |
+| Cursor | `.cursor/skills/aws-ses` |
+| OpenCode | `.opencode/skills/aws-ses` |
+| Hermes Agent | `hermes skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/v0.1.2/SKILL.md` |
+| OpenClaw / ClawHub | [clawhub.ai/airo7/skills/aws-ses-skill](https://clawhub.ai/airo7/skills/aws-ses-skill) — pick a specific version |
+
+Restart the agent (or start a new session) so it picks up the skill.
+
+To use the scripts without an agent, run them from the cloned folder:
 
 ```bash
-hermes skills install https://raw.githubusercontent.com/airo7/aws-ses-skill/main/SKILL.md
-# or from ClawHub:
-hermes skills install airo7/aws-ses-skill
-```
-
-### Claude Code
-
-```bash
-mkdir -p ~/.claude/skills
-cp -r aws-ses-skill ~/.claude/skills/aws-ses
-# or project-local:
-mkdir -p .claude/skills
-cp -r aws-ses-skill .claude/skills/aws-ses
-```
-
-### OpenAI Codex CLI
-
-```bash
-mkdir -p ~/.codex/skills
-cp -r aws-ses-skill ~/.codex/skills/aws-ses
-```
-
-### Cursor
-
-```bash
-mkdir -p .cursor/skills
-cp -r aws-ses-skill .cursor/skills/aws-ses
-```
-
-### OpenCode / OpenClaw / any SKILL.md agent
-
-```bash
-# OpenCode
-mkdir -p .opencode/skills
-cp -r aws-ses-skill .opencode/skills/aws-ses
-
-# OpenClaw / ClawHub
-# listing: https://clawhub.ai/airo7/skills/aws-ses-skill
-```
-
-### No agent — just the scripts
-
-```bash
-cd aws-ses-skill
-python3 -m pip install boto3
 python3 scripts/check_ses_status.py yourdomain.com
 ```
 
-Restart the agent (or start a new session) so it re-scans skills.
+---
+
+## Security
+
+- **No persistence.** No cron jobs, startup hooks, daemons, or state files.
+  Nothing is written to disk except the file you name with
+  `gen_smtp_password.py --output`.
+- **Secrets stay out of argv and stdout.** The IAM secret is read from the boto3
+  credential chain (or `--secret-stdin`); the derived SMTP password is hidden
+  unless you ask for `--output PATH` (new 0600 file) or `--show-password`.
+- **PII is masked.** `bounce_stats.py --json` redacts suppressed recipient
+  addresses unless you pass `--show-addresses`.
+- **Least privilege.** `SKILL.md` ships separate read-only, domain-setup and
+  sending IAM policies scoped to one identity.
+- **Network scope.** AWS SES v2 + CloudWatch in your region and DNS via `dig`.
+  The Sendy/`curl`/`openssl` snippets are documentation for you to run.
 
 ---
 
@@ -154,9 +139,9 @@ python3 scripts/verify_dns.py yourdomain.com
 
 # 4. Request production access (see SKILL.md §4 + the case templates)
 
-# 5. Generate SMTP credentials (reads the secret from the boto3 credential
-#    chain — never pass the secret on the command line)
-python3 scripts/gen_smtp_password.py --region eu-north-1
+# 5. Generate SMTP credentials (secret from the boto3 credential chain;
+#    password written to a new 0600 file, not printed)
+python3 scripts/gen_smtp_password.py --region eu-north-1 --output ~/ses-smtp.env
 
 # 6. Send a test email
 python3 scripts/send_test_email.py --from sender@yourdomain.com \
@@ -171,7 +156,7 @@ Fully mocked — no AWS calls, no credentials, no network:
 
 ```bash
 python3 -m unittest tests.test_aws_ses -v
-# 26 tests, all pass
+# 36 tests, all pass
 ```
 
 ---
@@ -179,10 +164,10 @@ python3 -m unittest tests.test_aws_ses -v
 ## Requirements
 
 - Python 3.11+
-- `boto3` (AWS SDK)
+- `boto3` (AWS SDK) — pinned in `requirements.txt`
 - `dig` (dnsutils/bind-tools) — only for `verify_dns.py`
-- Valid AWS credentials in the standard chain (environment variables,
-  shared credentials file, or IAM role)
+- Valid AWS credentials in the standard chain (`AWS_PROFILE` / shared
+  credentials file, SSO, or IAM role)
 
 ---
 
